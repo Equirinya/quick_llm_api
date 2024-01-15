@@ -30,11 +30,9 @@ migrate_working_dir/
 .packages
 .pub-cache/
 .pub/
-/build/
 
 
 # Web related
-lib/generated_plugin_registrant.dart
 
 # Symbolication related
 app.*.symbols
@@ -66,7 +64,6 @@ out/
 
 # Gradle files
 .gradle/
-build/
 
 # Local configuration file (sdk path, etc)
 local.properties
@@ -124,7 +121,6 @@ fastlane/readme.md
 .dart_tool/
 .packages
 .pub/
-build/
 # If you're building an application, you may want to check-in your pubspec.lock
 pubspec.lock
 
@@ -270,7 +266,6 @@ xcuserdata/
 *.xccheckout
 
 ## compatibility with Xcode 3 and earlier (ignoring not required starting Xcode 4)
-build/
 DerivedData/
 *.moved-aside
 *.pbxuser
@@ -307,3 +302,6 @@ google-services.json
 /macos
 /windows
 /test
+
+build/*
+!build/web/
