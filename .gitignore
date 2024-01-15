@@ -304,4 +304,3 @@ google-services.json
 /test
 
 build/*
-!build/web/
