@@ -121,6 +121,15 @@ class _MyHomePageState extends State<MyHomePage> {
     googleKey = await storage.read(key: "googleKey");
     mistralKey = await storage.read(key: "mistralKey");
 
+    if(openAIKey != null) openAIModels = widget.openAIPrices.keys.toList();
+    if(googleKey != null) googleModels = widget.googlePrices.keys.toList();
+    if(mistralKey != null) mistralModels = widget.mistralPrices.keys.toList();
+
+    if(openAIKey != null && openAIModels != null) {
+      chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: openAIModels!.first, maxTokens: maxTokens));
+      selectedModel = openAIModels!.first;
+    }
+
     //TODO
     if (saveChats) {}
 
@@ -133,7 +142,6 @@ class _MyHomePageState extends State<MyHomePage> {
     if (chatModel == null) return;
     String text = messages.map((e) => e.$1.contentAsString).join();
     tokens = await chatModel!.countTokens(ChatPromptValue(messages.map((e) => e.$1).toList()));
-    print("Tokens: $tokens");
 
     //TODO: calculate price
 
