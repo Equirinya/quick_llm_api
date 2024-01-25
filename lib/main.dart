@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:langchain/langchain.dart';
 import 'package:langchain_google/langchain_google.dart';
@@ -74,6 +74,7 @@ class _MyHomePageState extends State<MyHomePage> {
   bool initialized = false;
 
   TextEditingController textController = TextEditingController();
+  FocusNode textFocusNode = FocusNode();
 
   List<String> providers = ["OpenAI", "Google", "Mistral"];
   String? openAIKey;
@@ -98,16 +99,29 @@ class _MyHomePageState extends State<MyHomePage> {
                 'image/gif',
             'image/webp',
           ].contains(file.type)) {
+            setState(() {
+              currentImages.add(images.length);
+            });
             var reader = html.FileReader();
             reader.readAsArrayBuffer(file);
             reader.onLoadEnd.listen((event) {
               setState(() {
                 images.add((reader.result as Uint8List, file.type, true));
-                currentImages.add(images.length - 1);
               });
             });
           }
         }
+      }
+    });
+    html.document.onKeyPress.listen((event) {
+      // Check if Control key is pressed
+      var isCtrlPressed = event.ctrlKey;
+
+      // Get the pressed key code
+      var keyCode = event.which ?? event.keyCode;
+      // Check if Control key and Enter key are pressed
+      if (isCtrlPressed && (keyCode == 10 || keyCode == 13)) {
+        sendMessage();
       }
     });
     asyncInit();
@@ -121,13 +135,17 @@ class _MyHomePageState extends State<MyHomePage> {
     googleKey = await storage.read(key: "googleKey");
     mistralKey = await storage.read(key: "mistralKey");
 
-    if(openAIKey != null) openAIModels = widget.openAIPrices.keys.toList();
-    if(googleKey != null) googleModels = widget.googlePrices.keys.toList();
-    if(mistralKey != null) mistralModels = widget.mistralPrices.keys.toList();
+    if (openAIKey != null) openAIModels = widget.openAIPrices.keys.toList();
+    if (googleKey != null) googleModels = widget.googlePrices.keys.toList();
+    if (mistralKey != null) mistralModels = widget.mistralPrices.keys.toList();
 
-    if(openAIKey != null && openAIModels != null) {
-      chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: openAIModels!.first, maxTokens: maxTokens));
-      selectedModel = openAIModels!.first;
+    int selectedProvider = int.parse(await storage.read(key: "sProvider") ?? "0");
+    selectedModel = await storage.read(key: "sModel") ?? "";
+
+    if (selectedModel.isNotEmpty) {
+      selectModel(selectedProvider, selectedModel);
+    } else if (openAIKey != null && openAIModels != null) {
+      selectModel(0, openAIModels!.first);
     }
 
     //TODO
@@ -182,8 +200,12 @@ class _MyHomePageState extends State<MyHomePage> {
       List<int>.from(currentImages)
     ));
     currentImages.clear();
+    try {
+      textFocusNode.requestFocus();
+    } catch (e) {}
     setState(() {});
-    LanguageModelResult<AIChatMessage> response = await chatModel!.invoke(PromptValue.chat(messages.map((e) => e.$1).toList()));
+    LanguageModelResult<AIChatMessage> response =
+        await chatModel!.invoke(PromptValue.chat([const SystemChatMessage(content: "If needed respond with latex"), ...messages.map((e) => e.$1)]));
     messages.add((response.firstOutput, 0.0, null, null));
     setState(() {});
   }
@@ -264,7 +286,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void selectModel(int provider, String model) async {
     switch (provider) {
       case 0:
-        chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: model, maxTokens: 4096)); //TODO maxTokens
+        chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: model, maxTokens: 1024)); //TODO maxTokens
         break;
       case 1:
         chatModel = ChatGoogleGenerativeAI(apiKey: googleKey!, defaultOptions: ChatGoogleGenerativeAIOptions(model: model));
@@ -274,6 +296,9 @@ class _MyHomePageState extends State<MyHomePage> {
         break;
     }
     selectedModel = model;
+    storage.write(key: "sProvider", value: provider.toString());
+    storage.write(key: "sModel", value: model);
+
     calculatePrice();
     setState(() {});
   }
@@ -342,6 +367,27 @@ class _MyHomePageState extends State<MyHomePage> {
                             itemCount: messages.length,
                             itemBuilder: (context, index) {
                               bool isHuman = messages[index].$1 is HumanChatMessage;
+                              String message = isHuman ? messages[index].$3! : messages[index].$1.contentAsString;
+                              Color textColor = isHuman ? Theme.of(context).colorScheme.onPrimaryContainer : Theme.of(context).colorScheme.onSecondaryContainer;
+                              RegExp regExp = RegExp(r'\\\[.*?\\\]|\\\(.*?\\\)', dotAll: true, multiLine: true);
+                              Iterable<RegExpMatch> matches = regExp.allMatches(message);
+
+                              List<String> substrings = [];
+                              int previousEnd = 0;
+
+                              for (RegExpMatch match in matches) {
+                                String beforeLatex = message.substring(previousEnd, match.start);
+                                  substrings.add(beforeLatex);
+
+                                String latex = match.group(0) != null ? match.group(0)!.substring(2, match.group(0)!.length - 2) : "";
+                                substrings.add(latex);
+                                previousEnd = match.end;
+                              }
+
+                              if (previousEnd < message.length) {
+                                substrings.add(message.substring(previousEnd));
+                              }
+
                               return Align(
                                 alignment: isHuman ? Alignment.centerRight : Alignment.centerLeft,
                                 child: Padding(
@@ -357,12 +403,23 @@ class _MyHomePageState extends State<MyHomePage> {
                                       crossAxisAlignment: CrossAxisAlignment.end,
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        SelectableText(
-                                          isHuman ? messages[index].$3! : messages[index].$1.contentAsString,
-                                          style: TextStyle(
-                                              color: isHuman
-                                                  ? Theme.of(context).colorScheme.onPrimaryContainer
-                                                  : Theme.of(context).colorScheme.onSecondaryContainer),
+                                        SelectableText.rich(
+                                          TextSpan(children: [
+                                            for (var (index, substring) in substrings.indexed)
+                                              if (index % 2 == 1)
+                                                WidgetSpan(
+                                                  child: Math.tex(
+                                                    substring,
+                                                    textStyle: TextStyle(color: textColor),
+                                                  ),
+                                                  baseline: TextBaseline.ideographic,
+                                                )
+                                              else
+                                                TextSpan(
+                                                  text: substring,
+                                                  style: TextStyle(color: textColor),
+                                                )
+                                          ]),
                                         ),
                                         if (isHuman)
                                           SingleChildScrollView(
@@ -423,17 +480,22 @@ class _MyHomePageState extends State<MyHomePage> {
                                           color: Theme.of(context).colorScheme.outline,
                                         ),
                                         padding: const EdgeInsets.all(1),
-                                        child: ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: Image.memory(
-                                            images[imageIndex].$1,
-                                            height: max(MediaQuery.of(context).size.height * 0.1, 100),
-                                          ),
-                                        ),
+                                        child: images.length > imageIndex
+                                            ? ClipRRect(
+                                                borderRadius: BorderRadius.circular(8),
+                                                child: Image.memory(
+                                                  images[imageIndex].$1,
+                                                  height: max(MediaQuery.of(context).size.height * 0.1, 100),
+                                                ),
+                                              )
+                                            : ConstrainedBox(
+                                                constraints: const BoxConstraints(minHeight: 64, minWidth: 64),
+                                                child: const CupertinoActivityIndicator(),
+                                              ),
                                       ),
                                       Positioned(
-                                        top: 0,
-                                        right: 0,
+                                        top: 4,
+                                        right: 4,
                                         child: CircleAvatar(
                                           backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
                                           radius: 16,
@@ -449,20 +511,21 @@ class _MyHomePageState extends State<MyHomePage> {
                                           ),
                                         ),
                                       ),
-                                      Positioned(
-                                        bottom: 0,
-                                        right: 0,
-                                        child: IconButton(
-                                          iconSize: 16,
-                                          color: Theme.of(context).colorScheme.onTertiaryContainer,
-                                          onPressed: () {
-                                            setState(() {
-                                              images[imageIndex] = (images[imageIndex].$1, images[imageIndex].$2, !images[imageIndex].$3);
-                                            });
-                                          },
-                                          icon: Icon(images[imageIndex].$3 ? Icons.hd : Icons.hd_outlined),
+                                      if (images.length > imageIndex)
+                                        Positioned(
+                                          bottom: 0,
+                                          right: 0,
+                                          child: IconButton(
+                                            iconSize: 16,
+                                            color: Theme.of(context).colorScheme.onTertiaryContainer,
+                                            onPressed: () {
+                                              setState(() {
+                                                images[imageIndex] = (images[imageIndex].$1, images[imageIndex].$2, !images[imageIndex].$3);
+                                              });
+                                            },
+                                            icon: Icon(images[imageIndex].$3 ? Icons.hd : Icons.hd_outlined),
+                                          ),
                                         ),
-                                      ),
                                     ],
                                   ),
                                 ),
@@ -482,19 +545,20 @@ class _MyHomePageState extends State<MyHomePage> {
                                   hintText: 'Type a message or paste a picture',
                                 ),
                                 controller: textController,
-                                focusNode: FocusNode(
-                                  onKey: (FocusNode node, RawKeyEvent evt) {
-                                    if (evt.isControlPressed && evt.logicalKey.keyLabel == 'Enter') {
-                                      if (evt is RawKeyDownEvent) {
-                                        sendMessage();
-                                      }
-                                      return KeyEventResult.handled;
-                                    }
-                                    else {
-                                      return KeyEventResult.ignored;
-                                    }
-                                  },
-                                ),
+                                focusNode: textFocusNode,
+                                // focusNode: FocusNode(
+                                //   onKey: (FocusNode node, RawKeyEvent evt) {
+                                //     if (evt.isControlPressed && evt.logicalKey.keyLabel == 'Enter') {
+                                //       if (evt is RawKeyDownEvent) {
+                                //         sendMessage();
+                                //       }
+                                //       return KeyEventResult.handled;
+                                //     }
+                                //     else {
+                                //       return KeyEventResult.ignored;
+                                //     }
+                                //   },
+                                // ),
                                 // contentInsertionConfiguration: ContentInsertionConfiguration(
                                 //   onContentInserted: (KeyboardInsertedContent data) async {
                                 //     print("Inserted: ${data.mimeType}");
