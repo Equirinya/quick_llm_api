@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:code_text_field/code_text_field.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,9 @@ import 'package:langchain_google/langchain_google.dart';
 import 'package:langchain_mistralai/langchain_mistralai.dart';
 import 'package:langchain_openai/langchain_openai.dart';
 import 'dart:html' as html;
+import 'package:highlight/languages/all.dart';
+import 'package:flutter_highlight/themes/vs2015.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 //flutter build web -o ./docs/
 
@@ -535,27 +539,54 @@ class _MyHomePageState extends State<MyHomePage> {
                                                     )
                                                   else if (category == "code")
                                                     WidgetSpan(
-                                                      child: Container(
-                                                        decoration: BoxDecoration(
-                                                          borderRadius: BorderRadius.circular(8),
-                                                          color: Theme.of(context).colorScheme.surface,
-                                                        ),
-                                                        child: Column(
-                                                          mainAxisSize: MainAxisSize.min,
-                                                          children: [
-                                                            IconButton(
-                                                              icon: const Icon(Icons.copy),
-                                                              onPressed: () {
-                                                                Clipboard.setData(ClipboardData(text: substring));
-                                                              },
-                                                              iconSize: 16,
+                                                      child: Builder(
+                                                        builder: (context) {
+                                                          CodeController codeController = CodeController(
+                                                            text: substring.split("\n").sublist(1).join("\n"),
+                                                            language: builtinLanguages[substring.split("\n").first],
+                                                          );
+                                                          return ClipRRect(
+                                                            borderRadius: BorderRadius.circular(8),
+                                                            child: Container(
+                                                              width: MediaQuery.of(context).size.width * 0.5,
+                                                              color: Theme.of(context).colorScheme.surface,
+                                                              child: Column(
+                                                                mainAxisSize: MainAxisSize.min,
+                                                                children: [
+                                                                  Padding(
+                                                                    padding: const EdgeInsets.only(left:8.0),
+                                                                    child: Row(
+                                                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                                      children: [
+                                                                        Text(
+                                                                          substring.split("\n").first,
+                                                                        ),
+                                                                        IconButton(
+                                                                          icon: const Icon(Icons.copy),
+                                                                          onPressed: () {
+                                                                            Clipboard.setData(ClipboardData(text: substring));
+                                                                          },
+                                                                          iconSize: 16,
+                                                                          tooltip: "Copy to Clipboard",
+                                                                        ),
+                                                                      ],
+                                                                    ),
+                                                                  ),
+                                                                  CodeTheme(
+                                                                    data: const CodeThemeData(styles: vs2015Theme),
+                                                                    child: CodeField(
+                                                                      controller: codeController,
+                                                                      horizontalScroll: false,
+                                                                      wrap: true,
+                                                                      readOnly: true,
+                                                                      textStyle: GoogleFonts.sourceCodePro().copyWith(fontSize: 14),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
                                                             ),
-                                                            Text(
-                                                              substring,
-                                                              style: TextStyle(color: textColor, fontFamily: "monospace"),
-                                                            )
-                                                          ],
-                                                        ),
+                                                          );
+                                                        }
                                                       ),
                                                       baseline: TextBaseline.ideographic,
                                                     )
