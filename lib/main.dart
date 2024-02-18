@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:langchain/langchain.dart';
@@ -40,8 +41,8 @@ class MyHomePage extends StatefulWidget {
   //$ input / output per 1000 tokens
   final Map<String, (double, double)> openAIPrices = const {
     "gpt-4-vision-preview": (0.01, 0.03),
-    "gpt-4-1106-preview": (0.01, 0.03),
-    "gpt-3.5-turbo-1106": (0.0010, 0.0020),
+    "gpt-4-turbo-preview": (0.01, 0.03),
+    "gpt-3.5-turbo": (0.0010, 0.0020),
   };
 
   //$ input / output per 1000 chars
@@ -69,9 +70,10 @@ class _MyHomePageState extends State<MyHomePage> {
   int contextStartIndex = 0;
   double? currentPrice;
   int tokens = 0;
-  int maxTokens = 4096;
+  int maxTokens = 1024;
   final storage = const FlutterSecureStorage();
   bool initialized = false;
+  bool startedGenerating = false;
 
   TextEditingController textController = TextEditingController();
   FocusNode textFocusNode = FocusNode();
@@ -179,6 +181,14 @@ class _MyHomePageState extends State<MyHomePage> {
       ));
       return;
     }
+    if (startedGenerating) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Please wait while the current response is generated."),
+      ));
+      return;
+    }
+    startedGenerating = true;
+    if (contextStartIndex > messages.length) contextStartIndex = messages.length;
     String message = textController.text.trim();
     textController.clear();
     messages.add((
@@ -199,14 +209,46 @@ class _MyHomePageState extends State<MyHomePage> {
       message,
       List<int>.from(currentImages)
     ));
+    List<int> backUpImages = currentImages;
     currentImages.clear();
     try {
       textFocusNode.requestFocus();
     } catch (e) {}
     setState(() {});
-    LanguageModelResult<AIChatMessage> response =
-        await chatModel!.invoke(PromptValue.chat([const SystemChatMessage(content: "If needed respond with latex"), ...messages.map((e) => e.$1)]));
-    messages.add((response.firstOutput, 0.0, null, null));
+    try {
+      if (chatModel is ChatOpenAI) {
+        int messageIndex = messages.length;
+        startedGenerating = false;
+        messages.add((const AIChatMessage(content: ""), 0.0, null, null));
+        Stream<LanguageModelResult<AIChatMessage>> response = chatModel!.stream(
+            PromptValue.chat([const SystemChatMessage(content: "If needed respond with latex"), ...messages.sublist(contextStartIndex).map((e) => e.$1)]));
+        response.forEach((element) {
+          setState(() {
+            messages[messageIndex] = (messages[messageIndex].$1.concat(element.firstOutput), 0.0, null, null);
+          });
+        });
+      } else {
+        LanguageModelResult<AIChatMessage> response = await chatModel!.invoke(
+            PromptValue.chat([const SystemChatMessage(content: "If needed respond with latex"), ...messages.sublist(contextStartIndex).map((e) => e.$1)]));
+        startedGenerating = false;
+        messages.add((response.firstOutput, 0.0, null, null));
+      }
+    } catch (e, s) {
+      startedGenerating = false;
+      (ChatMessage, double, String?, List<int>?) lastMessage = messages.removeLast();
+      if (lastMessage.$1 is AIChatMessage) messages.removeLast();
+      textController.text = message;
+      currentImages = backUpImages;
+      SnackBar snackBar = SnackBar(
+        content: Text("An error occurred while sending the message: $e"),
+        action: SnackBarAction(
+          label: "Retry",
+          onPressed: sendMessage,
+        ),
+      );
+      print(e);
+      print(s);
+    }
     setState(() {});
   }
 
@@ -286,7 +328,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void selectModel(int provider, String model) async {
     switch (provider) {
       case 0:
-        chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: model, maxTokens: 1024)); //TODO maxTokens
+        chatModel = ChatOpenAI(apiKey: openAIKey!, defaultOptions: ChatOpenAIOptions(model: model, maxTokens: maxTokens));
         break;
       case 1:
         chatModel = ChatGoogleGenerativeAI(apiKey: googleKey!, defaultOptions: ChatGoogleGenerativeAIOptions(model: model));
@@ -341,8 +383,8 @@ class _MyHomePageState extends State<MyHomePage> {
                                   ],
                                 ),
                         Spacer(),
-                        ListTile(
-                          title: const Text("Max Output Tokens:"),
+                        const ListTile(
+                          title: Text("Max Output Tokens:"),
                         ),
                         ListTile(
                           title: TextFormField(
@@ -357,111 +399,217 @@ class _MyHomePageState extends State<MyHomePage> {
                       ],
                     ),
                   ),
-                  VerticalDivider(width: 1),
+                  const VerticalDivider(width: 1),
                   Expanded(
                     child: Column(
                       mainAxisSize: MainAxisSize.max,
                       children: [
                         Expanded(
                           child: ListView.builder(
-                            itemCount: messages.length,
+                            itemCount: startedGenerating ? messages.length + 1 : messages.length,
                             itemBuilder: (context, index) {
+                              if (startedGenerating && index == messages.length ||
+                                  index == messages.length - 1 && messages[index].$1 is AIChatMessage && messages[index].$1.contentAsString.isEmpty) {
+                                return Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(8),
+                                        color: Theme.of(context).colorScheme.secondaryContainer,
+                                      ),
+                                      child: const CupertinoActivityIndicator(),
+                                    ),
+                                  ),
+                                );
+                              }
+
                               bool isHuman = messages[index].$1 is HumanChatMessage;
+                              bool isActive = index >= contextStartIndex;
                               String message = isHuman ? messages[index].$3! : messages[index].$1.contentAsString;
                               Color textColor = isHuman ? Theme.of(context).colorScheme.onPrimaryContainer : Theme.of(context).colorScheme.onSecondaryContainer;
-                              RegExp regExp = RegExp(r'\\\[.*?\\\]|\\\(.*?\\\)', dotAll: true, multiLine: true);
-                              Iterable<RegExpMatch> matches = regExp.allMatches(message);
+                              Color chatColor = isHuman
+                                  ? Theme.of(context).colorScheme.primaryContainer.withOpacity(isActive ? 1 : 0.2)
+                                  : Theme.of(context).colorScheme.secondaryContainer.withOpacity(isActive ? 1 : 0.2);
+                              RegExp regExp =
+                                  RegExp(r'(?<latex>\\\[.*?\\\]|\\\(.*?\\\))|(?<bold>\*\*.*?\*\*)|(?<code>```[\S\s]*```)', dotAll: true, multiLine: true);
+                              Iterable<RegExpMatch> regMatches = regExp.allMatches(message);
 
-                              List<String> substrings = [];
+                              List<(String, String)> substrings = [];
                               int previousEnd = 0;
 
-                              for (RegExpMatch match in matches) {
+                              for (RegExpMatch match in regMatches) {
                                 String beforeLatex = message.substring(previousEnd, match.start);
-                                  substrings.add(beforeLatex);
+                                substrings.add(("text", beforeLatex));
 
-                                String latex = match.group(0) != null ? match.group(0)!.substring(2, match.group(0)!.length - 2) : "";
-                                substrings.add(latex);
+                                // String latex = match.group(0) != null ? match.group(0)!.substring(2, match.group(0)!.length - 2) : "";
+                                //
+                                //
+                                // substrings.add(latex);
+
+                                String? latex = match.namedGroup("latex");
+                                String? bold = match.namedGroup("bold");
+                                String? code = match.namedGroup("code");
+                                if (latex != null) substrings.add(("latex", latex.substring(2, latex.length - 2)));
+                                if (bold != null) substrings.add(("bold", bold.substring(2, bold.length - 2)));
+                                if (code != null) substrings.add(("code", code.substring(3, code.length - 3)));
+
                                 previousEnd = match.end;
                               }
 
                               if (previousEnd < message.length) {
-                                substrings.add(message.substring(previousEnd));
+                                substrings.add(("text", message.substring(previousEnd)));
                               }
 
-                              return Align(
-                                alignment: isHuman ? Alignment.centerRight : Alignment.centerLeft,
-                                child: Padding(
-                                  padding: const EdgeInsets.all(8.0),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(8),
-                                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(8),
-                                      color: isHuman ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).colorScheme.secondaryContainer,
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.end,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        SelectableText.rich(
-                                          TextSpan(children: [
-                                            for (var (index, substring) in substrings.indexed)
-                                              if (index % 2 == 1)
-                                                WidgetSpan(
-                                                  child: Math.tex(
-                                                    substring,
-                                                    textStyle: TextStyle(color: textColor),
-                                                  ),
-                                                  baseline: TextBaseline.ideographic,
-                                                )
-                                              else
-                                                TextSpan(
-                                                  text: substring,
-                                                  style: TextStyle(color: textColor),
-                                                )
-                                          ]),
+                              bool dividerIsHovered = false;
+
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  StatefulBuilder(
+                                    builder: (context, hoverSetState) {
+                                      return GestureDetector(
+                                        onTap: () {
+                                          setState(() {
+                                            contextStartIndex = index;
+                                          });
+                                        },
+                                        child: MouseRegion(
+                                          onEnter: (event) {
+                                            hoverSetState(() {
+                                              dividerIsHovered = true;
+                                            });
+                                          },
+                                          onExit: (event) {
+                                            hoverSetState(() {
+                                              dividerIsHovered = false;
+                                            });
+                                          },
+                                          child: Divider(
+                                            color: dividerIsHovered || contextStartIndex == index
+                                                ? Theme.of(context).colorScheme.onSurface
+                                                : Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
+                                          ),
                                         ),
-                                        if (isHuman)
-                                          SingleChildScrollView(
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                for (var imageIndex in messages[index].$4!)
-                                                  Container(
-                                                    decoration: BoxDecoration(
-                                                      borderRadius: BorderRadius.circular(8),
-                                                      color: Theme.of(context).colorScheme.outline,
-                                                    ),
-                                                    padding: const EdgeInsets.all(1),
-                                                    child: ClipRRect(
-                                                      borderRadius: BorderRadius.circular(8),
-                                                      child: GestureDetector(
-                                                        onTap: () {
-                                                          showDialog(
-                                                            context: context,
-                                                            builder: (context) => AlertDialog(
-                                                              content: Image.memory(
-                                                                images[imageIndex].$1,
-                                                              ),
+                                      );
+                                    },
+                                  ),
+                                  if (contextStartIndex == index)
+                                    Icon(
+                                      Icons.keyboard_arrow_down_rounded,
+                                      color: Theme.of(context).colorScheme.onSurface,
+                                      size: 16,
+                                    ),
+                                  Align(
+                                    alignment: isHuman ? Alignment.centerRight : Alignment.centerLeft,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8.0),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(8),
+                                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(8),
+                                          color: chatColor,
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SelectableText.rich(
+                                              TextSpan(children: [
+                                                for (var (category, substring) in substrings)
+                                                  if (category == "latex")
+                                                    WidgetSpan(
+                                                      child: Math.tex(
+                                                        substring,
+                                                        textStyle: TextStyle(color: textColor),
+                                                      ),
+                                                      baseline: TextBaseline.ideographic,
+                                                    )
+                                                  else if (category == "bold")
+                                                    TextSpan(
+                                                      text: substring,
+                                                      style: TextStyle(fontWeight: FontWeight.bold, color: textColor),
+                                                    )
+                                                  else if (category == "code")
+                                                    WidgetSpan(
+                                                      child: Container(
+                                                        decoration: BoxDecoration(
+                                                          borderRadius: BorderRadius.circular(8),
+                                                          color: Theme.of(context).colorScheme.surface,
+                                                        ),
+                                                        child: Column(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          children: [
+                                                            IconButton(
+                                                              icon: const Icon(Icons.copy),
+                                                              onPressed: () {
+                                                                Clipboard.setData(ClipboardData(text: substring));
+                                                              },
+                                                              iconSize: 16,
                                                             ),
-                                                          );
-                                                        },
-                                                        child: Image.memory(
-                                                          images[imageIndex].$1,
-                                                          height: max(MediaQuery.of(context).size.height * 0.1, 100),
+                                                            Text(
+                                                              substring,
+                                                              style: TextStyle(color: textColor, fontFamily: "monospace"),
+                                                            )
+                                                          ],
                                                         ),
                                                       ),
-                                                    ),
-                                                  ),
-                                              ],
+                                                      baseline: TextBaseline.ideographic,
+                                                    )
+                                                  else
+                                                    TextSpan(
+                                                      text: substring,
+                                                      style: TextStyle(color: textColor),
+                                                    )
+                                              ]),
                                             ),
-                                          )
-                                      ],
+                                            if (isHuman)
+                                              SingleChildScrollView(
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    for (var imageIndex in messages[index].$4!)
+                                                      Container(
+                                                        decoration: BoxDecoration(
+                                                          borderRadius: BorderRadius.circular(8),
+                                                          color: Theme.of(context).colorScheme.outline,
+                                                        ),
+                                                        padding: const EdgeInsets.all(1),
+                                                        child: ClipRRect(
+                                                          borderRadius: BorderRadius.circular(8),
+                                                          child: GestureDetector(
+                                                            onTap: () {
+                                                              showDialog(
+                                                                context: context,
+                                                                builder: (context) => AlertDialog(
+                                                                  content: Image.memory(
+                                                                    images[imageIndex].$1,
+                                                                  ),
+                                                                ),
+                                                              );
+                                                            },
+                                                            child: Image.memory(
+                                                              images[imageIndex].$1,
+                                                              height: max(MediaQuery.of(context).size.height * 0.1, 100),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              )
+                                          ],
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
+                                ],
                               );
                             },
+                            padding: const EdgeInsets.only(bottom: 128),
                           ),
                         ),
                         const Divider(height: 1),
@@ -546,39 +694,13 @@ class _MyHomePageState extends State<MyHomePage> {
                                 ),
                                 controller: textController,
                                 focusNode: textFocusNode,
-                                // focusNode: FocusNode(
-                                //   onKey: (FocusNode node, RawKeyEvent evt) {
-                                //     if (evt.isControlPressed && evt.logicalKey.keyLabel == 'Enter') {
-                                //       if (evt is RawKeyDownEvent) {
-                                //         sendMessage();
-                                //       }
-                                //       return KeyEventResult.handled;
-                                //     }
-                                //     else {
-                                //       return KeyEventResult.ignored;
-                                //     }
-                                //   },
-                                // ),
-                                // contentInsertionConfiguration: ContentInsertionConfiguration(
-                                //   onContentInserted: (KeyboardInsertedContent data) async {
-                                //     print("Inserted: ${data.mimeType}");
-                                //     if (data.data != null) {
-                                //       setState(() {
-                                //         images.add(data.data!);
-                                //         currentImages.add(images.length - 1);
-                                //       });
-                                //     }
-                                //   },
-                                //   allowedMimeTypes: const [
-                                //     'image/png',
-                                //     'image/jpeg',
-                                //     'image/jpg'
-                                //     'image/gif',
-                                //     'image/webp',
-                                //   ],
-                                // ),
+                                autofocus: true,
                               )),
-                              IconButton(onPressed: sendMessage, icon: const Icon(Icons.send))
+                              IconButton(
+                                onPressed: sendMessage,
+                                icon: const Icon(Icons.send),
+                                tooltip: "Send (Strg+Enter)",
+                              )
                             ],
                           ),
                         ),
